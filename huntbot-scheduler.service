@@ -1,0 +1,17 @@
+[Unit]
+Description=HuntBot Continuous Threat Hunt Scheduler
+After=network.target huntbot-api.service
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/huntbot
+EnvironmentFile=/opt/huntbot/.env
+ExecStart=/opt/huntbot/venv/bin/python scheduler.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/huntbot/scheduler.log
+StandardError=append:/var/log/huntbot/scheduler.log
+
+[Install]
+WantedBy=multi-user.target
