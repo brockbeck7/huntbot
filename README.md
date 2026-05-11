@@ -1,6 +1,6 @@
 # HuntBot — Agentic SOC AI Analyst
 
-> A fully local, agentic threat-hunting pipeline that translates natural-language questions into structured SIEM queries, runs AI-powered analysis against real or mock log data, surfaces MITRE ATT&CK-mapped findings, and offers automated remediation — all without sending data to a third-party API.
+> A fully local, agentic threat-hunting pipeline that translates natural-language questions into structured SIEM queries, runs AI-powered analysis against real or mock log data, surfaces MITRE ATT&CK-mapped findings, and offers automated remediation  all without sending data to a third-party API.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -10,7 +10,7 @@
 
 ## Overview
 
-HuntBot is an agentic SOC analyst built in Python. Feed it a plain-English threat-hunt question; it autonomously builds a query context, retrieves relevant log data, selects an appropriate local LLM, runs a structured threat hunt, and outputs actionable findings — complete with IOCs, MITRE technique mappings, and optional remediation actions against Microsoft Defender for Endpoint.
+HuntBot is an agentic SOC analyst built in Python. Feed it a plain-English threat-hunt question; it autonomously builds a query context, retrieves relevant log data, selects an appropriate local LLM, runs a structured threat hunt, and outputs actionable findings complete with IOCs, MITRE technique mappings, and optional remediation actions against Microsoft Defender for Endpoint.
 
 No OpenAI account required. No log data leaves your environment.
 
