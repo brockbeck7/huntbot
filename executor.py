@@ -1,136 +1,152 @@
 """
-OpenAI-compatible LLM client.
+Agentic remediation executor.
 
-Supports any server that speaks the OpenAI chat completions API:
-Ollama, LM Studio, vLLM, llama.cpp server, etc.
+Actions:
+  isolate_device   — calls Microsoft Defender for Endpoint (MDE) isolate API
+  block_ip         — stub (extend to your firewall/EDR of choice)
+  disable_account  — stub (extend to Azure AD / on-prem AD)
 
-Strategy:
-  Round 1 — attempts native tool_choice="required" first; falls back to
-             JSON-schema-in-prompt if the model doesn't support tool calling.
-  Round 2 — plain chat completion; strips markdown fences and parses JSON.
+All actions are DRY-RUN when AAD env vars are absent (safe default).
+The --autonomous flag skips confirmation prompts.
 """
 
 import json
-import re
 from typing import Any, Dict, List
 
-from openai import OpenAI
+import requests
 
-from . import keys
-from . import prompt_management as pm
-
-_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+from . import keys, utilities
 
 
-def _client() -> OpenAI:
-    return OpenAI(
-        base_url=keys.LOCAL_LLM_BASE_URL,
-        api_key=keys.LOCAL_LLM_API_KEY,
+# ── MDE helpers ──────────────────────────────────────────────────────────────
+
+def _get_bearer_token() -> str:
+    url = (
+        f"https://login.microsoftonline.com/{keys.AAD_TENANT_ID}"
+        "/oauth2/v2.0/token"
     )
+    r = requests.post(
+        url,
+        data={
+            "grant_type":    "client_credentials",
+            "client_id":     keys.AAD_CLIENT_ID,
+            "client_secret": keys.AAD_CLIENT_SECRET,
+            "scope":         "https://api.securitycenter.microsoft.com/.default",
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()["access_token"]
 
 
-def _parse_json(text: str) -> Dict[str, Any]:
-    """Parse JSON from model output, tolerating markdown fences and leading prose."""
-    if not text:
-        raise ValueError("Empty model response.")
-    stripped = _FENCE_RE.sub("", text).strip()
-    # Try a clean parse first
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
-    # Fall back: find the outermost { } block
-    start = stripped.find("{")
-    if start == -1:
-        raise ValueError(f"No JSON object found in response: {text[:300]}")
-    depth = 0
-    for i in range(start, len(stripped)):
-        if stripped[i] == "{":
-            depth += 1
-        elif stripped[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return json.loads(stripped[start : i + 1])
-    raise ValueError(f"Unbalanced JSON braces in response: {text[:300]}")
+def _get_mde_machine_id(hostname: str, token: str) -> str:
+    r = requests.get(
+        "https://api.securitycenter.microsoft.com/api/machines",
+        params={
+            "$filter":  f"computerDnsName eq '{hostname}'",
+            "$orderby": "lastSeen desc",
+            "$top":     1,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    values = r.json().get("value", [])
+    if not values:
+        raise RuntimeError(f"No MDE machine record found for '{hostname}'")
+    return values[0]["id"]
 
 
-def get_query_context(analyst_question: str, model: str) -> Dict[str, Any]:
+# ── Remediation actions ───────────────────────────────────────────────────────
+
+def isolate_device(hostname: str, reason: str) -> Dict[str, Any]:
+    """Full network isolation via MDE API. Dry-runs if AAD creds are absent."""
+    if not keys.remediation_enabled():
+        return {"dry_run": True, "would_isolate": hostname, "reason": reason}
+    token      = _get_bearer_token()
+    machine_id = _get_mde_machine_id(hostname, token)
+    r = requests.post(
+        f"https://api.securitycenter.microsoft.com/api/machines/{machine_id}/isolate",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type":  "application/json",
+        },
+        data=json.dumps({"Comment": reason, "IsolationType": "Full"}),
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def block_ip(ip: str, reason: str) -> Dict[str, Any]:
+    """Stub — wire to your firewall, NSG, or EDR block-list."""
+    return {"dry_run": True, "would_block_ip": ip, "reason": reason}
+
+
+def disable_account(upn: str, reason: str) -> Dict[str, Any]:
+    """Stub — wire to Azure AD or on-prem AD disable logic."""
+    return {"dry_run": True, "would_disable_account": upn, "reason": reason}
+
+
+def notify(message: str) -> Dict[str, Any]:
+    utilities.print_info(f"NOTIFY: {message}")
+    return {"notified": True}
+
+
+# ── Orchestration ─────────────────────────────────────────────────────────────
+
+def consider_remediation(
+    findings: List[Dict[str, Any]], autonomous: bool = False
+) -> None:
     """
-    Round 1: translate natural-language question → structured query context.
-
-    Tries native tool calling first; falls back to JSON-in-prompt if the model
-    doesn't support tool_choice="required".
+    For each High/Critical finding with Medium/High confidence,
+    offer (or automatically apply) remediation actions.
     """
-    client = _client()
-
-    # Attempt 1: native tool calling
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            temperature=0.0,
-            messages=[
-                {"role": "system", "content": pm.SYSTEM_PROMPT_TOOL_SELECTION},
-                {"role": "user",   "content": analyst_question},
-            ],
-            tools=pm.TOOLS_QUERY_CONTEXT,
-            tool_choice="required",
-        )
-        msg = resp.choices[0].message
-        if getattr(msg, "tool_calls", None):
-            args = msg.tool_calls[0].function.arguments
-            return json.loads(args) if isinstance(args, str) else args
-    except Exception:
-        pass  # Fall through to JSON-in-prompt
-
-    # Attempt 2: JSON-schema-in-prompt fallback
-    schema_hint = (
-        "Return ONLY a JSON object with keys: table_name (string), fields (string[]), "
-        "lookback_hours (int), device_name (string), user_name (string), "
-        "max_rows (int, default 5000), summary (string). "
-        "No prose. No markdown fences. "
-        "table_name must be one of: DeviceLogonEvents, DeviceProcessEvents, "
-        "DeviceNetworkEvents, DeviceFileEvents, SigninLogs, EmailEvents."
+    _SEV_RANK  = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+    _CONF_RANK = {"High": 0, "Medium": 1, "Low": 2}
+    findings = sorted(
+        findings,
+        key=lambda f: (
+            _SEV_RANK.get(f.get("severity", "Low"), 3),
+            _CONF_RANK.get(f.get("confidence", "Low"), 2),
+        ),
     )
-    resp = client.chat.completions.create(
-        model=model,
-        temperature=0.0,
-        messages=[
-            {
-                "role": "system",
-                "content": pm.SYSTEM_PROMPT_TOOL_SELECTION + "\n\n" + schema_hint,
-            },
-            {"role": "user", "content": analyst_question},
-        ],
-    )
-    return _parse_json(resp.choices[0].message.content or "")
+    actioned = False
+    for finding in findings:
+        if finding.get("severity") not in ("High", "Critical"):
+            continue
+        if finding.get("confidence") not in ("Medium", "High"):
+            continue
+
+        title  = finding.get("title", "Unknown finding")
+        reason = f"HuntBot auto-remediation: {title}"
+        iocs   = finding.get("iocs") or {}
+
+        for host in iocs.get("hosts") or []:
+            if _confirm(f"Isolate host '{host}'?", autonomous):
+                result = isolate_device(host, reason)
+                utilities.print_success(f"isolate_device({host}) → {result}")
+                actioned = True
+
+        for ip in iocs.get("ips") or []:
+            if _confirm(f"Block IP '{ip}'?", autonomous):
+                result = block_ip(ip, reason)
+                utilities.print_success(f"block_ip({ip}) → {result}")
+                actioned = True
+
+        for upn in iocs.get("users") or []:
+            if "@" not in upn:
+                continue
+            if _confirm(f"Disable account '{upn}'?", autonomous):
+                result = disable_account(upn, reason)
+                utilities.print_success(f"disable_account({upn}) → {result}")
+                actioned = True
+
+    if not actioned:
+        utilities.print_info("No remediation actions taken.")
 
 
-def run_threat_hunt(
-    analyst_question: str,
-    table_name: str,
-    logs: List[Dict[str, Any]],
-    model: str,
-) -> Dict[str, Any]:
-    """Round 2: run the full threat hunt and return parsed findings JSON."""
-    client = _client()
-    user_prompt = pm.build_threat_hunt_prompt(
-        analyst_question, table_name, json.dumps(logs, default=str)
-    )
-    resp = client.chat.completions.create(
-        model=model,
-        temperature=0.1,
-        messages=[
-            {"role": "system", "content": pm.SYSTEM_PROMPT_THREAT_HUNT},
-            {"role": "user",   "content": user_prompt},
-        ],
-    )
-    return _parse_json(resp.choices[0].message.content or "")
-
-
-def estimate_tokens(text: str) -> int:
-    """
-    Conservative token estimate: 1 token ≈ 4 characters.
-    tiktoken is calibrated for OpenAI tokenizers and gives wrong results for
-    Llama/Qwen/Mistral, so a safe heuristic beats a precise but wrong number.
-    """
-    return max(1, len(text) // 4) if text else 0
+def _confirm(prompt: str, autonomous: bool) -> bool:
+    if autonomous:
+        return True
+    return input(f"\n{prompt} [y/N]: ").strip().lower() == "y"
