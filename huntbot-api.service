@@ -1,0 +1,17 @@
+[Unit]
+Description=HuntBot SOC Dashboard API
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/huntbot
+EnvironmentFile=/opt/huntbot/.env
+ExecStart=/opt/huntbot/venv/bin/python api.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/huntbot/api.log
+StandardError=append:/var/log/huntbot/api.log
+
+[Install]
+WantedBy=multi-user.target
