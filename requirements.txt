@@ -1,0 +1,9 @@
+openai>=1.0.0
+requests>=2.31.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+apscheduler>=3.10.0
+
+# Uncomment for LOG_BACKEND=azure:
+# azure-identity>=1.15.0
+# azure-monitor-query>=1.2.0
