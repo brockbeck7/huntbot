@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HuntBot — SOC Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #080b0f;
+    --bg2:       #0d1117;
+    --bg3:       #161b22;
+    --bg4:       #1c2330;
+    --border:    #21262d;
+    --text:      #c9d1d9;
+    --text-dim:  #6e7681;
+    --text-head: #e6edf3;
+    --critical:  #ff3b30;
+    --high:      #ff9f0a;
+    --medium:    #ffd60a;
+    --low:       #30d158;
+    --info:      #0a84ff;
+    --accent:    #58a6ff;
+    --pulse-c:   rgba(255,59,48,0.15);
+    --pulse-h:   rgba(255,159,10,0.12);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Scanline overlay ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 28px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    font-family: 'Syne', sans-serif;
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--text-head);
+    letter-spacing: -0.5px;
+  }
+  .logo span { color: var(--accent); }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .ws-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    display: inline-block;
+    margin-right: 6px;
+    transition: background 0.3s;
+  }
+  .ws-dot.connected { background: var(--low); box-shadow: 0 0 6px var(--low); }
+
+  /* ── Layout ── */
+  .layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    grid-template-rows: auto 1fr;
+    min-height: calc(100vh - 57px);
+  }
+
+  /* ── Severity board ── */
+  .sev-board {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sev-card {
+    background: var(--bg2);
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    position: relative;
+    overflow: hidden;
+    transition: background 0.2s;
+  }
+  .sev-card:hover { background: var(--bg3); }
+
+  .sev-card::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+  }
+  .sev-card.critical::before { background: var(--critical); }
+  .sev-card.high::before     { background: var(--high); }
+  .sev-card.medium::before   { background: var(--medium); }
+  .sev-card.low::before      { background: var(--low); }
+
+  .sev-label {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  .sev-count {
+    font-family: 'Syne', sans-serif;
+    font-size: 42px;
+    font-weight: 800;
+    line-height: 1;
+    transition: color 0.3s;
+  }
+  .sev-card.critical .sev-count { color: var(--critical); }
+  .sev-card.high .sev-count     { color: var(--high); }
+  .sev-card.medium .sev-count   { color: var(--medium); }
+  .sev-card.low .sev-count      { color: var(--low); }
+
+  .sev-sub {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  /* Pulse animation for critical */
+  .sev-card.critical.has-findings {
+    animation: pulse-critical 2s infinite;
+  }
+  @keyframes pulse-critical {
+    0%, 100% { background: var(--bg2); }
+    50%       { background: var(--pulse-c); }
+  }
+  .sev-card.high.has-findings {
+    animation: pulse-high 3s infinite;
+  }
+  @keyframes pulse-high {
+    0%, 100% { background: var(--bg2); }
+    50%       { background: var(--pulse-h); }
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .nav-section {
+    padding: 20px 16px 8px;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    font-weight: 500;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 16px;
+    cursor: pointer;
+    border-radius: 6px;
+    margin: 0 8px 2px;
+    color: var(--text-dim);
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .nav-item:hover { background: var(--bg3); color: var(--text); }
+  .nav-item.active { background: var(--bg4); color: var(--text-head); }
+  .nav-item .icon { font-size: 14px; width: 18px; text-align: center; }
+  .nav-item .badge {
+    margin-left: auto;
+    font-size: 10px;
+    background: var(--bg4);
+    padding: 2px 7px;
+    border-radius: 10px;
+    color: var(--text-dim);
+  }
+  .nav-item .badge.urgent {
+    background: rgba(255,59,48,0.2);
+    color: var(--critical);
+  }
+
+  .sidebar-stats {
+    margin-top: auto;
+    padding: 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .sidebar-stat {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .sidebar-stat span:last-child { color: var(--text); }
+
+  /* ── Main content ── */
+  .main {
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel { display: none; }
+  .panel.active { display: flex; flex-direction: column; flex: 1; }
+
+  /* ── Panel header ── */
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 24px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .panel-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-head);
+  }
+  .panel-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+  /* ── Filter bar ── */
+  .filter-bar {
+    display: flex;
+    gap: 8px;
+    padding: 12px 24px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+  }
+  .filter-btn {
+    padding: 5px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .filter-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .filter-btn.active { background: var(--accent); border-color: var(--accent); color: #000; font-weight: 700; }
+
+  /* ── Findings list ── */
+  .findings-list {
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  .finding-row {
+    display: grid;
+    grid-template-columns: 4px 90px 70px 1fr auto;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 24px 14px 20px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.12s;
+    animation: slideIn 0.25s ease;
+  }
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(-8px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  .finding-row:hover { background: var(--bg3); }
+  .finding-row.new-finding { animation: newFinding 1s ease; }
+  @keyframes newFinding {
+    0%   { background: rgba(88,166,255,0.12); }
+    100% { background: transparent; }
+  }
+
+  .sev-strip { height: 100%; width: 4px; border-radius: 2px; align-self: stretch; }
+  .sev-strip.Critical { background: var(--critical); box-shadow: 0 0 8px var(--critical); }
+  .sev-strip.High     { background: var(--high); box-shadow: 0 0 6px var(--high); }
+  .sev-strip.Medium   { background: var(--medium); }
+  .sev-strip.Low      { background: var(--low); }
+
+  .sev-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    text-align: center;
+  }
+  .sev-badge.Critical { background: rgba(255,59,48,0.15);  color: var(--critical); }
+  .sev-badge.High     { background: rgba(255,159,10,0.15); color: var(--high); }
+  .sev-badge.Medium   { background: rgba(255,214,10,0.12); color: var(--medium); }
+  .sev-badge.Low      { background: rgba(48,209,88,0.12);  color: var(--low); }
+
+  .conf-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+
+  .finding-info { min-width: 0; }
+  .finding-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-head);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .finding-meta {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 3px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .mitre-tag {
+    background: rgba(88,166,255,0.1);
+    color: var(--accent);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+  }
+
+  .status-chip {
+    font-size: 10px;
+    padding: 3px 9px;
+    border-radius: 12px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .status-chip.new          { border-color: var(--accent); color: var(--accent); }
+  .status-chip.investigating { border-color: var(--medium); color: var(--medium); }
+  .status-chip.resolved     { border-color: var(--low); color: var(--low); }
+  .status-chip.false_positive { border-color: var(--text-dim); color: var(--text-dim); }
+
+  /* ── Finding detail modal ── */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 500;
+    backdrop-filter: blur(2px);
+  }
+  .modal-overlay.open { display: flex; align-items: flex-start; justify-content: center; padding: 40px 20px; }
+
+  .modal {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    width: 100%;
+    max-width: 780px;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+    animation: modalIn 0.2s ease;
+  }
+  @keyframes modalIn {
+    from { opacity: 0; transform: translateY(-16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .modal-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+  }
+  .modal-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text-head);
+    flex: 1;
+  }
+  .modal-close {
+    background: none; border: none; color: var(--text-dim);
+    font-size: 20px; cursor: pointer; padding: 0 4px;
+    line-height: 1;
+  }
+  .modal-close:hover { color: var(--text); }
+
+  .modal-body { padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
+
+  .detail-section { display: flex; flex-direction: column; gap: 8px; }
+  .detail-label {
+    font-size: 10px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    font-weight: 500;
+  }
+  .detail-value { color: var(--text); line-height: 1.6; }
+
+  .ioc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+  }
+  .ioc-group { background: var(--bg3); border-radius: 6px; padding: 10px 12px; }
+  .ioc-type { font-size: 10px; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; }
+  .ioc-val  { font-size: 12px; color: var(--accent); word-break: break-all; }
+
+  .rec-list { display: flex; flex-direction: column; gap: 6px; }
+  .rec-item {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    background: var(--bg3);
+    padding: 10px 12px;
+    border-radius: 6px;
+    border-left: 3px solid var(--accent);
+  }
+  .rec-icon { color: var(--accent); flex-shrink: 0; }
+  .rec-text { color: var(--text); line-height: 1.5; }
+
+  .action-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+  }
+
+  .btn {
+    padding: 7px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg3);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #000; font-weight: 700; }
+  .btn.danger  { background: rgba(255,59,48,0.1); border-color: var(--critical); color: var(--critical); }
+  .btn.resolve { background: rgba(48,209,88,0.1); border-color: var(--low); color: var(--low); }
+
+  .notes-input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    padding: 10px 12px;
+    resize: vertical;
+    min-height: 70px;
+    transition: border-color 0.15s;
+  }
+  .notes-input:focus { outline: none; border-color: var(--accent); }
+
+  /* ── IOC Tracker panel ── */
+  .ioc-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .ioc-table th {
+    text-align: left;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+    position: sticky;
+    top: 0;
+  }
+  .ioc-table td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .ioc-table tr:hover td { background: var(--bg3); }
+  .ioc-value { color: var(--accent); word-break: break-all; }
+  .hit-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .hit-fill {
+    height: 4px;
+    background: var(--accent);
+    border-radius: 2px;
+    min-width: 4px;
+    max-width: 80px;
+  }
+
+  /* ── Hunt console panel ── */
+  .hunt-console {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex: 1;
+  }
+
+  .hunt-input-row {
+    display: flex;
+    gap: 10px;
+  }
+  .hunt-input {
+    flex: 1;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-head);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    padding: 12px 16px;
+    transition: border-color 0.15s;
+  }
+  .hunt-input:focus { outline: none; border-color: var(--accent); }
+  .hunt-input::placeholder { color: var(--text-dim); }
+
+  .hunt-btn {
+    padding: 12px 24px;
+    background: var(--accent);
+    border: none;
+    border-radius: 8px;
+    color: #000;
+    font-family: 'Syne', sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.15s;
+    white-space: nowrap;
+  }
+  .hunt-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .hunt-btn:hover:not(:disabled) { opacity: 0.85; }
+
+  .hunt-result {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    font-size: 12px;
+    line-height: 1.7;
+    min-height: 120px;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
+  .hunt-result.loading { color: var(--text-dim); animation: blink 1s step-end infinite; }
+  @keyframes blink {
+    50% { opacity: 0.4; }
+  }
+
+  /* ── Run history panel ── */
+  .runs-table { width: 100%; border-collapse: collapse; }
+  .runs-table th {
+    text-align: left; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--text-dim); padding: 10px 16px; border-bottom: 1px solid var(--border);
+    background: var(--bg2); position: sticky; top: 0;
+  }
+  .runs-table td { padding: 9px 16px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .runs-table tr:hover td { background: var(--bg3); }
+  .run-ok    { color: var(--low); }
+  .run-error { color: var(--critical); }
+  .run-running { color: var(--medium); animation: blink 1s step-end infinite; }
+
+  /* ── Toast notifications ── */
+  .toast-container {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    z-index: 1000;
+  }
+  .toast {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    min-width: 280px;
+    max-width: 380px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    animation: toastIn 0.3s ease;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateX(20px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  .toast.critical { border-left: 4px solid var(--critical); }
+  .toast.high     { border-left: 4px solid var(--high); }
+  .toast-icon     { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+  .toast-body     { flex: 1; }
+  .toast-title    { font-size: 12px; font-weight: 700; color: var(--text-head); margin-bottom: 3px; }
+  .toast-sub      { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+
+  /* ── Empty state ── */
+  .empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--text-dim);
+    padding: 60px;
+  }
+  .empty-icon { font-size: 48px; opacity: 0.3; }
+  .empty-text { font-size: 13px; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+  /* ── Live indicator ── */
+  .live-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--low);
+    border: 1px solid rgba(48,209,88,0.3);
+    padding: 3px 10px;
+    border-radius: 12px;
+  }
+  .live-dot {
+    width: 6px; height: 6px;
+    background: var(--low);
+    border-radius: 50%;
+    animation: livePulse 1.5s ease-in-out infinite;
+  }
+  @keyframes livePulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.5; transform: scale(0.8); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Hunt<span>Bot</span></div>
+  <div class="status-bar">
+    <div class="live-pill">
+      <div class="live-dot"></div>
+      LIVE
+    </div>
+    <span><span class="ws-dot" id="wsDot"></span><span id="wsStatus">connecting...</span></span>
+    <span id="lastUpdate" style="color:var(--text-dim)">—</span>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- Severity board -->
+  <div class="sev-board">
+    <div class="sev-card critical" id="card-critical">
+      <div class="sev-label">Critical</div>
+      <div class="sev-count" id="cnt-critical">0</div>
+      <div class="sev-sub">active threats</div>
+    </div>
+    <div class="sev-card high" id="card-high">
+      <div class="sev-label">High</div>
+      <div class="sev-count" id="cnt-high">0</div>
+      <div class="sev-sub">active threats</div>
+    </div>
+    <div class="sev-card medium" id="card-medium">
+      <div class="sev-label">Medium</div>
+      <div class="sev-count" id="cnt-medium">0</div>
+      <div class="sev-sub">active threats</div>
+    </div>
+    <div class="sev-card low" id="card-low">
+      <div class="sev-label">Low</div>
+      <div class="sev-count" id="cnt-low">0</div>
+      <div class="sev-sub">active threats</div>
+    </div>
+  </div>
+
+  <!-- Sidebar nav -->
+  <nav class="sidebar">
+    <div class="nav-section">Views</div>
+    <div class="nav-item active" onclick="showPanel('findings')" id="nav-findings">
+      <span class="icon">⚡</span> Findings
+      <span class="badge urgent" id="badge-new">0</span>
+    </div>
+    <div class="nav-item" onclick="showPanel('iocs')" id="nav-iocs">
+      <span class="icon">🎯</span> IOC Tracker
+      <span class="badge" id="badge-iocs">0</span>
+    </div>
+    <div class="nav-item" onclick="showPanel('hunt')" id="nav-hunt">
+      <span class="icon">🔍</span> Hunt Console
+    </div>
+    <div class="nav-item" onclick="showPanel('runs')" id="nav-runs">
+      <span class="icon">📋</span> Run History
+    </div>
+
+    <div class="sidebar-stats">
+      <div class="sidebar-stat"><span>Total findings</span><span id="stat-total">0</span></div>
+      <div class="sidebar-stat"><span>IOCs tracked</span><span id="stat-iocs">0</span></div>
+      <div class="sidebar-stat"><span>Hunts run</span><span id="stat-runs">0</span></div>
+    </div>
+  </nav>
+
+  <!-- Main panels -->
+  <main class="main">
+
+    <!-- Findings panel -->
+    <div class="panel active" id="panel-findings">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">Findings</div>
+          <div class="panel-sub">Sorted by severity — Critical first</div>
+        </div>
+      </div>
+      <div class="filter-bar">
+        <button class="filter-btn active" onclick="filterFindings('all', this)">All</button>
+        <button class="filter-btn" onclick="filterFindings('new', this)">New</button>
+        <button class="filter-btn" onclick="filterFindings('investigating', this)">Investigating</button>
+        <button class="filter-btn" onclick="filterFindings('resolved', this)">Resolved</button>
+        <button class="filter-btn" onclick="filterFindings('false_positive', this)">False Positive</button>
+      </div>
+      <div class="findings-list" id="findingsList">
+        <div class="empty-state">
+          <div class="empty-icon">🛡</div>
+          <div class="empty-text">Waiting for first hunt run...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- IOC Tracker panel -->
+    <div class="panel" id="panel-iocs">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">IOC Tracker</div>
+          <div class="panel-sub">Deduplicated across all hunt runs</div>
+        </div>
+      </div>
+      <div style="overflow:auto;flex:1;">
+        <table class="ioc-table">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Value</th>
+              <th>First seen</th>
+              <th>Last seen</th>
+              <th>Hits</th>
+              <th>Severities</th>
+            </tr>
+          </thead>
+          <tbody id="iocTableBody">
+            <tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:40px;">No IOCs tracked yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Hunt Console panel -->
+    <div class="panel" id="panel-hunt">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">Hunt Console</div>
+          <div class="panel-sub">Ask a question in plain English</div>
+        </div>
+      </div>
+      <div class="hunt-console">
+        <div style="font-size:11px;color:var(--text-dim);">Examples: "Any brute force on WIN-DC-01 in the last 2 hours?" · "Lateral movement from WORKSTATION-07?" · "Suspicious outbound connections last 30 min?"</div>
+        <div class="hunt-input-row">
+          <input class="hunt-input" id="huntInput" type="text" placeholder="Enter your threat hunt question..." />
+          <button class="hunt-btn" id="huntBtn" onclick="runManualHunt()">Hunt →</button>
+        </div>
+        <div class="hunt-result" id="huntResult" style="display:none;"></div>
+      </div>
+    </div>
+
+    <!-- Run History panel -->
+    <div class="panel" id="panel-runs">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">Run History</div>
+          <div class="panel-sub">Every scheduled and manual hunt</div>
+        </div>
+      </div>
+      <div style="overflow:auto;flex:1;">
+        <table class="runs-table">
+          <thead>
+            <tr>
+              <th>Started</th>
+              <th>Table</th>
+              <th>Question</th>
+              <th>Rows</th>
+              <th>Findings</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="runsTableBody">
+            <tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:40px;">No runs yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Finding detail modal -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <div style="flex:1;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+          <span class="sev-badge" id="modalSev"></span>
+          <span class="conf-badge" id="modalConf"></span>
+          <span class="status-chip" id="modalStatus"></span>
+        </div>
+        <div class="modal-title" id="modalTitle"></div>
+      </div>
+      <button class="modal-close" onclick="closeModalBtn()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="detail-section">
+        <div class="detail-label">Summary</div>
+        <div class="detail-value" id="modalSummary"></div>
+      </div>
+      <div class="detail-section" id="modalMitreSection">
+        <div class="detail-label">MITRE ATT&CK</div>
+        <div id="modalMitre"></div>
+      </div>
+      <div class="detail-section" id="modalIocSection">
+        <div class="detail-label">IOCs</div>
+        <div class="ioc-grid" id="modalIocs"></div>
+      </div>
+      <div class="detail-section" id="modalRecSection">
+        <div class="detail-label">Recommendations</div>
+        <div class="rec-list" id="modalRecs"></div>
+      </div>
+      <div class="detail-section" id="modalNotesSection">
+        <div class="detail-label">Analyst Notes</div>
+        <textarea class="notes-input" id="modalNotes" placeholder="Add investigation notes..."></textarea>
+      </div>
+      <div class="action-row">
+        <button class="btn primary" onclick="updateStatus('investigating')">🔍 Investigating</button>
+        <button class="btn resolve" onclick="updateStatus('resolved')">✓ Resolve</button>
+        <button class="btn" onclick="updateStatus('false_positive')">✗ False Positive</button>
+        <button class="btn" onclick="saveNotes()">💾 Save Notes</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  let ws = null;
+  let allFindings = [];
+  let currentFilter = 'all';
+  let currentFindingId = null;
+
+  // ── WebSocket ──────────────────────────────────────────────────────────────
+  function connectWS() {
+    ws = new WebSocket(`ws://${location.host}/ws`);
+
+    ws.onopen = () => {
+      document.getElementById('wsDot').classList.add('connected');
+      document.getElementById('wsStatus').textContent = 'live';
+    };
+
+    ws.onclose = () => {
+      document.getElementById('wsDot').classList.remove('connected');
+      document.getElementById('wsStatus').textContent = 'reconnecting...';
+      setTimeout(connectWS, 3000);
+    };
+
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'stats')           handleStats(msg.data);
+      if (msg.type === 'findings')        handleFindings(msg.data);
+      if (msg.type === 'new_findings')    handleNewFindings(msg);
+      if (msg.type === 'finding_updated') refreshFindings();
+    };
+  }
+
+  // ── Stats handler ──────────────────────────────────────────────────────────
+  function handleStats(s) {
+    document.getElementById('cnt-critical').textContent = s.critical || 0;
+    document.getElementById('cnt-high').textContent     = s.high     || 0;
+    document.getElementById('cnt-medium').textContent   = s.medium   || 0;
+    document.getElementById('cnt-low').textContent      = s.low      || 0;
+    document.getElementById('stat-total').textContent   = s.total    || 0;
+    document.getElementById('stat-iocs').textContent    = s.iocs     || 0;
+    document.getElementById('stat-runs').textContent    = s.runs     || 0;
+    document.getElementById('badge-iocs').textContent   = s.iocs     || 0;
+
+    const cc = document.getElementById('card-critical');
+    const ch = document.getElementById('card-high');
+    cc.classList.toggle('has-findings', (s.critical || 0) > 0);
+    ch.classList.toggle('has-findings', (s.high     || 0) > 0);
+
+    document.getElementById('lastUpdate').textContent = 'updated ' + new Date().toLocaleTimeString();
+
+    if (s.recent) {
+      const newOnes = s.recent.filter(f => !allFindings.find(x => x.id === f.id));
+      if (newOnes.length) refreshFindings();
+    }
+  }
+
+  // ── Findings handler ───────────────────────────────────────────────────────
+  function handleFindings(findings) {
+    allFindings = findings;
+    renderFindings();
+    updateNewBadge();
+  }
+
+  function handleNewFindings(msg) {
+    showToast(`${msg.count} new finding(s) in ${msg.table}`, '⚡', 'high');
+    refreshFindings();
+  }
+
+  async function refreshFindings() {
+    const res = await fetch('/api/findings?limit=200');
+    allFindings = await res.json();
+    renderFindings();
+    updateNewBadge();
+  }
+
+  function updateNewBadge() {
+    const newCount = allFindings.filter(f => f.status === 'new').length;
+    const badge = document.getElementById('badge-new');
+    badge.textContent = newCount;
+    badge.className = 'badge' + (newCount > 0 ? ' urgent' : '');
+  }
+
+  function renderFindings() {
+    const list = document.getElementById('findingsList');
+    let filtered = allFindings;
+    if (currentFilter !== 'all') {
+      filtered = allFindings.filter(f => f.status === currentFilter);
+    }
+
+    if (!filtered.length) {
+      list.innerHTML = `<div class="empty-state"><div class="empty-icon">🛡</div><div class="empty-text">${currentFilter === 'all' ? 'No findings yet — hunts running...' : 'No findings with this status.'}</div></div>`;
+      return;
+    }
+
+    list.innerHTML = filtered.map(f => {
+      const mitreTags = (f.mitre || []).slice(0,3).map(m =>
+        `<span class="mitre-tag">${m}</span>`
+      ).join('');
+      const ts = f.detected_at ? new Date(f.detected_at).toLocaleString() : '';
+      return `
+        <div class="finding-row" onclick="openFinding(${f.id})">
+          <div class="sev-strip ${f.severity}"></div>
+          <span class="sev-badge ${f.severity}">${f.severity.toUpperCase()}</span>
+          <span class="conf-badge">${f.confidence}</span>
+          <div class="finding-info">
+            <div class="finding-title">${escHtml(f.title)}</div>
+            <div class="finding-meta">
+              <span>${escHtml(f.table_name || '')}</span>
+              <span>${ts}</span>
+              ${mitreTags}
+            </div>
+          </div>
+          <span class="status-chip ${f.status}">${f.status.replace('_',' ')}</span>
+        </div>`;
+    }).join('');
+  }
+
+  function filterFindings(status, btn) {
+    currentFilter = status;
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderFindings();
+  }
+
+  // ── Finding detail modal ───────────────────────────────────────────────────
+  async function openFinding(id) {
+    currentFindingId = id;
+    const f = await fetch(`/api/findings/${id}`).then(r => r.json());
+
+    document.getElementById('modalSev').textContent     = f.severity;
+    document.getElementById('modalSev').className       = `sev-badge ${f.severity}`;
+    document.getElementById('modalConf').textContent    = f.confidence + ' confidence';
+    document.getElementById('modalStatus').textContent  = (f.status || '').replace('_',' ');
+    document.getElementById('modalStatus').className    = `status-chip ${f.status}`;
+    document.getElementById('modalTitle').textContent   = f.title;
+    document.getElementById('modalSummary').textContent = f.summary;
+    document.getElementById('modalNotes').value         = f.analyst_notes || '';
+
+    // MITRE
+    const mitre = f.mitre || [];
+    document.getElementById('modalMitreSection').style.display = mitre.length ? '' : 'none';
+    document.getElementById('modalMitre').innerHTML = mitre.map(m =>
+      `<span class="mitre-tag" style="margin-right:6px;font-size:12px;">${m}</span>`
+    ).join('');
+
+    // IOCs
+    const iocs = f.iocs || {};
+    const hasIocs = Object.values(iocs).some(v => v && v.length);
+    document.getElementById('modalIocSection').style.display = hasIocs ? '' : 'none';
+    document.getElementById('modalIocs').innerHTML = Object.entries(iocs)
+      .filter(([, vals]) => vals && vals.length)
+      .map(([type, vals]) => `
+        <div class="ioc-group">
+          <div class="ioc-type">${type}</div>
+          ${vals.map(v => `<div class="ioc-val">${escHtml(String(v))}</div>`).join('')}
+        </div>`
+      ).join('');
+
+    // Recommendations
+    const recs = f.recommendations || [];
+    document.getElementById('modalRecSection').style.display = recs.length ? '' : 'none';
+    document.getElementById('modalRecs').innerHTML = recs.map(r =>
+      `<div class="rec-item"><span class="rec-icon">→</span><span class="rec-text">${escHtml(r)}</span></div>`
+    ).join('');
+
+    document.getElementById('modalOverlay').classList.add('open');
+  }
+
+  function closeModalBtn() {
+    document.getElementById('modalOverlay').classList.remove('open');
+  }
+  function closeModal(e) {
+    if (e.target === document.getElementById('modalOverlay')) closeModalBtn();
+  }
+
+  async function updateStatus(status) {
+    if (!currentFindingId) return;
+    const notes = document.getElementById('modalNotes').value;
+    await fetch(`/api/findings/${currentFindingId}`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ status, notes }),
+    });
+    closeModalBtn();
+    showToast(`Finding marked as ${status.replace('_',' ')}`, '✓', 'low');
+    refreshFindings();
+  }
+
+  async function saveNotes() {
+    if (!currentFindingId) return;
+    const notes = document.getElementById('modalNotes').value;
+    const f = allFindings.find(x => x.id === currentFindingId);
+    await fetch(`/api/findings/${currentFindingId}`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ status: f?.status || 'new', notes }),
+    });
+    showToast('Notes saved', '💾', 'info');
+  }
+
+  // ── IOC Tracker ────────────────────────────────────────────────────────────
+  async function loadIOCs() {
+    const iocs = await fetch('/api/iocs?limit=500').then(r => r.json());
+    const tbody = document.getElementById('iocTableBody');
+    if (!iocs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:40px;">No IOCs tracked yet.</td></tr>';
+      return;
+    }
+    const maxHits = Math.max(...iocs.map(i => i.hit_count || 1));
+    tbody.innerHTML = iocs.map(ioc => {
+      const sevs = JSON.parse(ioc.severities || '[]');
+      const barW  = Math.round((ioc.hit_count / maxHits) * 80);
+      const sevColors = { Critical: 'var(--critical)', High: 'var(--high)', Medium: 'var(--medium)', Low: 'var(--low)' };
+      const sevHtml = sevs.map(s => `<span class="sev-badge ${s}" style="font-size:9px;padding:1px 6px;">${s}</span>`).join(' ');
+      return `
+        <tr>
+          <td style="color:var(--text-dim)">${ioc.ioc_type}</td>
+          <td class="ioc-value">${escHtml(ioc.ioc_value)}</td>
+          <td style="color:var(--text-dim)">${fmtDate(ioc.first_seen)}</td>
+          <td style="color:var(--text-dim)">${fmtDate(ioc.last_seen)}</td>
+          <td>
+            <div class="hit-bar">
+              <div class="hit-fill" style="width:${barW}px"></div>
+              <span>${ioc.hit_count}</span>
+            </div>
+          </td>
+          <td>${sevHtml}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  // ── Run history ────────────────────────────────────────────────────────────
+  async function loadRuns() {
+    const runs = await fetch('/api/runs?limit=100').then(r => r.json());
+    const tbody = document.getElementById('runsTableBody');
+    if (!runs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:40px;">No runs yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = runs.map(r => {
+      const cls = r.status === 'ok' ? 'run-ok' : r.status === 'running' ? 'run-running' : 'run-error';
+      const icon = r.status === 'ok' ? '✓' : r.status === 'running' ? '⋯' : '✘';
+      return `
+        <tr>
+          <td style="color:var(--text-dim)">${fmtDate(r.started_at)}</td>
+          <td style="color:var(--accent)">${r.table_name}</td>
+          <td style="color:var(--text-dim);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(r.question || '—')}</td>
+          <td>${r.rows_scanned || 0}</td>
+          <td>${r.findings_count || 0}</td>
+          <td class="${cls}">${icon} ${r.status}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  // ── Manual hunt ────────────────────────────────────────────────────────────
+  async function runManualHunt() {
+    const input = document.getElementById('huntInput');
+    const btn   = document.getElementById('huntBtn');
+    const result = document.getElementById('huntResult');
+    const q = input.value.trim();
+    if (!q) return;
+
+    btn.disabled  = true;
+    result.style.display = 'block';
+    result.className = 'hunt-result loading';
+    result.textContent = '⋯ Hunting...';
+
+    try {
+      const res  = await fetch('/api/hunt', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ question: q }),
+      });
+      const data = await res.json();
+
+      if (data.error) {
+        result.className = 'hunt-result';
+        result.textContent = '✘ Error: ' + data.error;
+        return;
+      }
+
+      result.className = 'hunt-result';
+      if (!data.findings || !data.findings.length) {
+        result.textContent = `✓ Clean — no findings\nTable: ${data.table}\nRows scanned: ${data.rows_scanned}`;
+        return;
+      }
+
+      result.textContent = `⚡ ${data.findings.length} finding(s) — Table: ${data.table} — Rows scanned: ${data.rows_scanned}\n\n` +
+        data.findings.map((f, i) =>
+          `[${i+1}] ${f.severity.toUpperCase()} | ${f.title}\n     ${f.summary}\n     MITRE: ${(f.mitre||[]).join(', ')||'—'}`
+        ).join('\n\n');
+
+      showToast(`${data.findings.length} finding(s) from manual hunt`, '🔍', 'high');
+      refreshFindings();
+    } catch (e) {
+      result.className = 'hunt-result';
+      result.textContent = '✘ Request failed: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  document.getElementById('huntInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') runManualHunt();
+  });
+
+  // ── Panel navigation ───────────────────────────────────────────────────────
+  function showPanel(name) {
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById(`panel-${name}`).classList.add('active');
+    document.getElementById(`nav-${name}`).classList.add('active');
+
+    if (name === 'iocs')  loadIOCs();
+    if (name === 'runs')  loadRuns();
+  }
+
+  // ── Toast ──────────────────────────────────────────────────────────────────
+  function showToast(msg, icon, level) {
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = `toast ${level}`;
+    toast.innerHTML = `<span class="toast-icon">${icon}</span><div class="toast-body"><div class="toast-title">${msg}</div><div class="toast-sub">${new Date().toLocaleTimeString()}</div></div>`;
+    container.appendChild(toast);
+    setTimeout(() => toast.remove(), 5000);
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function fmtDate(s) {
+    if (!s) return '—';
+    try { return new Date(s).toLocaleString(); } catch { return s; }
+  }
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  connectWS();
+</script>
+</body>
+</html>
