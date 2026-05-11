@@ -1,33 +1,129 @@
 """
-Local model catalog and auto-selection logic.
-
-Add or remove models here to match what you have pulled in Ollama / LM Studio.
-context_window values are conservative — real limits may be higher.
+Display helpers, ANSI color printing, and JSONL persistence.
 """
 
-MODELS: dict[str, dict] = {
-    "llama3.1:8b":      {"context_window": 128_000, "good_for": "fast tool-calling"},
-    "qwen2.5:7b":       {"context_window":  32_000, "good_for": "fast, follows JSON schemas"},
-    "qwen2.5:14b":      {"context_window":  32_000, "good_for": "balanced reasoning (default)"},
-    "qwen2.5:32b":      {"context_window":  32_000, "good_for": "deeper reasoning"},
-    "llama3.1:70b":     {"context_window": 128_000, "good_for": "largest hunts, slowest"},
-    "mistral-nemo:12b": {"context_window": 128_000, "good_for": "long-context fallback"},
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List
+
+_USE_COLOR = sys.stdout.isatty()
+_R   = "\033[0m"  if _USE_COLOR else ""
+_B   = "\033[1m"  if _USE_COLOR else ""
+_RED = "\033[31m" if _USE_COLOR else ""
+_GRN = "\033[32m" if _USE_COLOR else ""
+_YLW = "\033[33m" if _USE_COLOR else ""
+_BLU = "\033[34m" if _USE_COLOR else ""
+_CYN = "\033[36m" if _USE_COLOR else ""
+_DIM = "\033[2m"  if _USE_COLOR else ""
+
+
+def print_info(msg: str)    -> None: print(f"{_CYN}[i]{_R} {msg}")
+def print_success(msg: str) -> None: print(f"{_GRN}[+]{_R} {msg}")
+def print_warn(msg: str)    -> None: print(f"{_YLW}[!]{_R} {msg}")
+def print_error(msg: str)   -> None: print(f"{_RED}[x]{_R} {msg}")
+
+
+def print_header(msg: str) -> None:
+    bar = "═" * len(msg)
+    print(f"\n{_B}{_BLU}{bar}\n{msg}\n{bar}{_R}")
+
+
+_DEFAULTS: Dict[str, Any] = {
+    "table_name":    "DeviceLogonEvents",
+    "fields":        [],
+    "lookback_hours": 24,
+    "device_name":   "",
+    "user_name":     "",
+    "max_rows":      5_000,
+    "summary":       "",
 }
 
-# Round-1: translate NL → structured query context (tool call)
-TOOL_CALL_MODEL    = "llama3.1:8b"
 
-# Round-2: run the actual threat hunt against log rows
-DEFAULT_HUNT_MODEL  = "qwen2.5:14b"
-LARGE_CONTEXT_MODEL = "mistral-nemo:12b"
+def sanitize_query_context(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge model output with safe defaults; coerce types."""
+    out = dict(_DEFAULTS)
+    if isinstance(ctx, dict):
+        for k, v in ctx.items():
+            if k in out and v is not None:
+                out[k] = v
+    try:
+        out["lookback_hours"] = int(out["lookback_hours"])
+    except (TypeError, ValueError):
+        out["lookback_hours"] = 24
+    try:
+        out["max_rows"] = int(out["max_rows"])
+    except (TypeError, ValueError):
+        out["max_rows"] = 5_000
+    if not isinstance(out["fields"], list):
+        out["fields"] = []
+    out["device_name"] = str(out["device_name"] or "")
+    out["user_name"]   = str(out["user_name"]   or "")
+    return out
 
 
-def pick_hunt_model(estimated_tokens: int) -> str:
-    """
-    Select the smallest model whose context window fits the prompt.
-    Falls back to LARGE_CONTEXT_MODEL if the default is too tight.
-    """
-    default_ctx = MODELS[DEFAULT_HUNT_MODEL]["context_window"]
-    if estimated_tokens < default_ctx * 0.75:
-        return DEFAULT_HUNT_MODEL
-    return LARGE_CONTEXT_MODEL
+def display_query_context(ctx: Dict[str, Any]) -> None:
+    print_header("Query context")
+    print(f"  table    : {ctx['table_name']}")
+    print(f"  lookback : {ctx['lookback_hours']}h   max rows: {ctx['max_rows']}")
+    print(f"  device   : {ctx['device_name'] or '(any)'}")
+    print(f"  user     : {ctx['user_name']   or '(any)'}")
+    print(f"  summary  : {ctx['summary']}")
+
+
+def display_findings(findings: List[Dict[str, Any]]) -> None:
+    print_header("Findings")
+    if not findings:
+        print_success("No suspicious patterns detected.")
+        return
+
+    _SEV_RANK  = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+    _CONF_RANK = {"High": 0, "Medium": 1, "Low": 2}
+    findings = sorted(
+        findings,
+        key=lambda f: (
+            _SEV_RANK.get(f.get("severity", "Low"), 3),
+            _CONF_RANK.get(f.get("confidence", "Low"), 2),
+        ),
+    )
+
+    sev_color = {
+        "Critical": _RED,
+        "High":     _RED,
+        "Medium":   _YLW,
+        "Low":      _DIM,
+    }
+
+    for i, f in enumerate(findings, 1):
+        sev = f.get("severity", "Low")
+        c   = sev_color.get(sev, "")
+        print(f"\n{_B}[{i}] {f.get('title', '(no title)')}{_R}")
+        print(f"    severity   : {c}{sev}{_R}   confidence: {f.get('confidence', '')}")
+        print(f"    {f.get('summary', '')}")
+
+        if f.get("mitre"):
+            print(f"    MITRE      : {', '.join(f['mitre'])}")
+
+        iocs = f.get("iocs") or {}
+        for ioc_type, vals in iocs.items():
+            if vals:
+                print(f"    {ioc_type:<12}: {', '.join(str(v) for v in vals)}")
+
+        for action in f.get("recommended_actions") or []:
+            print(f"        → {action}")
+
+
+def persist_findings(
+    findings: List[Dict[str, Any]],
+    path: str = "threats.jsonl",
+) -> None:
+    if not findings:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with Path(path).open("a") as fh:
+        for finding in findings:
+            fh.write(
+                json.dumps({**finding, "_detected_at": now}, default=str) + "\n"
+            )
+    print_info(f"Persisted {len(findings)} finding(s) to {path}")
